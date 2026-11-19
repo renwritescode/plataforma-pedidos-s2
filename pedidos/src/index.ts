@@ -1,8 +1,7 @@
 import express, { Request, Response } from "express";
-import os from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
-import { leerMetricas } from "./metricas";
+import { medirLatencia, resumenMetricas } from "./metricas";
 import {
   contarPrimosEnPool,
   estadoPool,
@@ -26,19 +25,15 @@ const app = express();
 app.use(express.json());
 
 /**
- * Interceptor de clase: registra la duración externa de cada petición.
- * Con el bucle bloqueado este registro llega tarde o no llega, que es
- * justamente el problema que la sonda interna de /metricas resuelve.
+ * Interceptor de métricas: acumula peticiones, tiempo total, máximo y
+ * cuántas superaron el umbral. Se registra después del parseo del cuerpo
+ * y antes de las rutas de negocio.
  */
-app.use((req: Request, res: Response, next) => {
-  const inicio = performance.now();
-  res.on("finish", () => {
-    const ms = Math.round(performance.now() - inicio);
-    console.log(
-      `[interceptor] ${req.method} ${req.originalUrl} -> ${res.statusCode} en ${ms} ms`,
-    );
-  });
-  next();
+app.use(medirLatencia);
+
+/** Resumen acumulado por método y ruta. */
+app.get("/metricas", (_req: Request, res: Response) => {
+  res.json(resumenMetricas());
 });
 
 /** Liveness. Se usa como carga base en el escenario 1. */
@@ -47,22 +42,9 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 /**
- * Sonda interna. Publica el retardo del bucle en milisegundos, los núcleos
- * disponibles y el estado del pool. No reinicia el histograma: mide desde el
- * arranque del proceso o desde el último reinicio.
- */
-app.get("/metricas", (_req: Request, res: Response) => {
-  res.json({
-    bucle: leerMetricas(),
-    nucleos: os.availableParallelism(),
-    pool: estadoPool(),
-  });
-});
-
-/**
  * Bloqueo síncrono del hilo principal. Sirve para el escenario 1: mientras
- * dura el bucle while, el proceso no puede atender /health ni ejecutar
- * callbacks, y el histograma lo registra como retardo.
+ * dura el bucle while, el proceso no puede atender /health; el interceptor
+ * registra la duración de esta ruta y el cliente de /health ve la espera.
  */
 app.get("/reporte/bloqueante", (req: Request, res: Response) => {
   const solicitado = Number(req.query.ms ?? 1500);
@@ -221,6 +203,6 @@ app.listen(PORT, () => {
       `(inventario: ${INVENTARIO_URL}, timeout: ${TIMEOUT_MS} ms)`,
   );
   console.log(
-    `Bucle: /metricas | Worker: /reporte/worker | Pool: /reporte/pool`,
+    `Métricas: /metricas | Worker: /reporte/worker | Pool: /reporte/pool`,
   );
 });
