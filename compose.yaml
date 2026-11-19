@@ -1,0 +1,29 @@
+services:
+  inventario:
+    build: ./inventario
+    ports:
+      - "3001:3001"
+    environment:
+      RETARDO_MS: "0"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  pedidos:
+    build: ./pedidos
+    ports:
+      - "3000:3000"
+    environment:
+      INVENTARIO_URL: "http://inventario:3001"
+      # Si se omiten, pool.ts usa os.availableParallelism() y el doble para la cola.
+      # MAX_TRABAJADORES: "8"
+      # MAX_COLA: "16"
+    depends_on:
+      - inventario
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
