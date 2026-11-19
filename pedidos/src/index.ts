@@ -1,6 +1,13 @@
 import express, { Request, Response } from "express";
+import os from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
+import { leerMetricas } from "./metricas";
+import {
+  contarPrimosEnPool,
+  estadoPool,
+  PoolLlenoError,
+} from "./pool";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const INVENTARIO_URL = process.env.INVENTARIO_URL ?? "http://localhost:3001";
@@ -18,7 +25,11 @@ const pedidos: Pedido[] = [];
 const app = express();
 app.use(express.json());
 
-/** Interceptor de clase: registra la duración externa de cada petición. */
+/**
+ * Interceptor de clase: registra la duración externa de cada petición.
+ * Con el bucle bloqueado este registro llega tarde o no llega, que es
+ * justamente el problema que la sonda interna de /metricas resuelve.
+ */
 app.use((req: Request, res: Response, next) => {
   const inicio = performance.now();
   res.on("finish", () => {
@@ -36,9 +47,22 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 /**
+ * Sonda interna. Publica el retardo del bucle en milisegundos, los núcleos
+ * disponibles y el estado del pool. No reinicia el histograma: mide desde el
+ * arranque del proceso o desde el último reinicio.
+ */
+app.get("/metricas", (_req: Request, res: Response) => {
+  res.json({
+    bucle: leerMetricas(),
+    nucleos: os.availableParallelism(),
+    pool: estadoPool(),
+  });
+});
+
+/**
  * Bloqueo síncrono del hilo principal. Sirve para el escenario 1: mientras
  * dura el bucle while, el proceso no puede atender /health ni ejecutar
- * callbacks.
+ * callbacks, y el histograma lo registra como retardo.
  */
 app.get("/reporte/bloqueante", (req: Request, res: Response) => {
   const solicitado = Number(req.query.ms ?? 1500);
@@ -59,7 +83,7 @@ app.get("/reporte/bloqueante", (req: Request, res: Response) => {
   });
 });
 
-/** Un worker nuevo por petición, sin límite de concurrencia. */
+/** Un worker nuevo por petición, sin límite de concurrencia (comparación). */
 app.get("/reporte/worker", async (req: Request, res: Response) => {
   const n = Number(req.query.n ?? 2_000_000);
   if (!Number.isInteger(n) || n <= 0) {
@@ -78,6 +102,43 @@ app.get("/reporte/worker", async (req: Request, res: Response) => {
     });
   } catch (error) {
     const e = error as Error;
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * Pool con límite. Si hay cupo, espera el resultado; si la cola está llena,
+ * responde 503 de inmediato con Retry-After: 1 y el estado del pool.
+ */
+app.get("/reporte/pool", async (req: Request, res: Response) => {
+  const n = Number(req.query.n ?? 2_000_000);
+  if (!Number.isInteger(n) || n <= 0) {
+    res.status(400).json({ error: "n debe ser un entero mayor que 0" });
+    return;
+  }
+
+  const inicio = performance.now();
+  try {
+    const resultado = await contarPrimosEnPool(n);
+    res.json({
+      modo: "pool",
+      ...resultado,
+      totalMs: Math.round(performance.now() - inicio),
+      pool: estadoPool(),
+    });
+  } catch (error) {
+    const e = error as Error;
+    if (e instanceof PoolLlenoError || e.name === "PoolLleno") {
+      res
+        .set("Retry-After", "1")
+        .status(503)
+        .json({
+          error: "pool_lleno",
+          mensaje: "El pool no tiene trabajadores libres ni espacio en cola.",
+          pool: estadoPool(),
+        });
+      return;
+    }
     res.status(500).json({ error: e.message });
   }
 });
@@ -159,5 +220,7 @@ app.listen(PORT, () => {
     `Servicio de Pedidos escuchando en el puerto ${PORT} ` +
       `(inventario: ${INVENTARIO_URL}, timeout: ${TIMEOUT_MS} ms)`,
   );
-  console.log(`Worker sin límite: /reporte/worker`);
+  console.log(
+    `Bucle: /metricas | Worker: /reporte/worker | Pool: /reporte/pool`,
+  );
 });
