@@ -5,7 +5,7 @@
 | Dato | Valor |
 | --- | --- |
 | Laptop (CPU, RAM) | Apple M1, 8 núcleos, 16 GB de RAM, macOS 26.6.2 |
-| Ejecución | Docker 29.10.0 + Docker Compose 5.8.0 sobre Colima 0.10.3 (VM de 8 CPU y 8 GB) |
+| Ejecución | Docker CLI 29.10.0 (Engine 29.5.2) + Compose 5.8.0 sobre Colima 0.10.3 (VM de 8 CPU y 8 GB) |
 | nucleos según /metricas | 8 |
 | MAX_TRABAJADORES y MAX_COLA | 8 y 16 (valores por defecto: `os.availableParallelism()` y su doble) |
 | Duración de un reporte con n=2000000 | ≈160 ms en total (126 ms de cálculo) sin carga concurrente; /reporte/worker aislado: 144 ms |
